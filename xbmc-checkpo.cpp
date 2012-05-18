@@ -17,7 +17,8 @@
  *  the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
  *  http://www.gnu.org/copyleft/gpl.html
  *
- */
+ */#include "utils/TimeUtils.h"
+ 
 
 #ifdef _MSC_VER
 #define _CRT_SECURE_NO_WARNINGS
@@ -59,8 +60,12 @@ char DirSepChar = '/';
 char* pSourceDirectory = NULL;
 bool bCheckSourceLang;
 
-std::map<uint32_t, CPOEntry> mapStrings;
-typedef std::map<uint32_t, CPOEntry>::iterator itStrings;
+std::map<uint32_t, std::vector<CPOEntry>> mapStrings;
+typedef std::map<uint32_t, std::vector<CPOEntry>>::iterator itStrings;
+
+std::vector<std::vector<CPOEntry>> vecClassicEntries;
+typedef std::vector<std::vector<CPOEntry>>::iterator itClassicEntries;
+
 
 void PrintUsage()
 {
