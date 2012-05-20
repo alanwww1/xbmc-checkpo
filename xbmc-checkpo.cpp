@@ -17,8 +17,7 @@
  *  the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
  *  http://www.gnu.org/copyleft/gpl.html
  *
- */#include "utils/TimeUtils.h"
- 
+ */
 
 #ifdef _MSC_VER
 #define _CRT_SECURE_NO_WARNINGS
@@ -60,11 +59,14 @@ char DirSepChar = '/';
 char* pSourceDirectory = NULL;
 bool bCheckSourceLang;
 
-std::map<uint32_t, std::vector<CPOEntry>> mapStrings;
-typedef std::map<uint32_t, std::vector<CPOEntry>>::iterator itStrings;
+std::string strHeader;
+FILE * pPOTFile;
 
-std::vector<std::vector<CPOEntry>> vecClassicEntries;
-typedef std::vector<std::vector<CPOEntry>>::iterator itClassicEntries;
+std::map<uint32_t, CPOEntry> mapStrings;
+typedef std::map<uint32_t, CPOEntry>::iterator itStrings;
+
+std::vector<CPOEntry> vecClassicEntries;
+typedef std::vector<CPOEntry>::iterator itClassicEntries;
 
 
 void PrintUsage()
@@ -85,36 +87,183 @@ void PrintUsage()
   );
 #endif
 return;
+};
+
+bool WriteMultilineComment(std::vector<std::string> vecCommnts, std::string prefix)
+{
+  if (!vecCommnts.empty())
+  {
+    for (size_t i=0; i < vecCommnts.size(); i++)
+      fprintf(pPOTFile, "%s%s\n", prefix.c_str(), vecCommnts[i].c_str());
+  }
+  return !vecCommnts.empty();
 }
+
+bool WritePOFile(std::string strDir, std::string strLang)
+{
+  int writtenEntry = 0;
+  std::string OutputPOFilename;
+  std::string LCode = strHeader.substr(strHeader.find("Language: ")+10,2);
+  bool bIsForeignLang = strLang != "English";
+
+  OutputPOFilename = strDir + DirSepChar + strLang + DirSepChar + "strings.po.temp";
+
+  // Initalize the output po document
+  pPOTFile = fopen (OutputPOFilename.c_str(),"wb");
+  if (pPOTFile == NULL)
+  {
+    printf("Error opening output file: %s\n", OutputPOFilename.c_str());
+    return false;
+  }
+  printf("%s\t\t", LCode.c_str()); 
+
+  fprintf(pPOTFile, "%s\n", strHeader.c_str());
+
+  int previd = -1;
+  bool bCommentWritten = false;
+  for ( itStrings it = mapStrings.begin() ; it != mapStrings.end() ; it++)
+  {
+    int id = it->first;
+    CPOEntry currEntry = it->second;
+
+    //create comment lines, if empty string id or ids found and
+    //re-create original xml comments between entries. Only for the source language
+    bCommentWritten = false;
+    if (!bIsForeignLang)
+    {
+      bCommentWritten = WriteMultilineComment(currEntry.interlineComm, "#");
+      if (id-previd >= 2)
+      {
+        if (id-previd == 2 && previd > -1)
+          fprintf(pPOTFile,"#empty string with id %i\n", id-1);
+        if (id-previd > 2 && previd > -1)
+          fprintf(pPOTFile,"#empty strings from id %i to %i\n", previd+1, id-1);
+        bCommentWritten = true;
+      }
+      if (bCommentWritten) fprintf(pPOTFile, "\n");
+    }
+
+    //create comment, including string id
+    fprintf(pPOTFile,"#: id:%i\n", id);
+
+    //write comment originally placed next to the string entry
+    //convert it into #. style gettext comment
+    if (!bIsForeignLang)
+    {
+      WriteMultilineComment(currEntry.translatorComm, "# ");
+      WriteMultilineComment(currEntry.extractedComm, "#.");
+      WriteMultilineComment(currEntry.referenceComm, "#:");
+    }
+
+    if (!currEntry.msgCtxt.empty())
+      fprintf(pPOTFile,"msgctxt \"%s\"\n", currEntry.msgCtxt.c_str());
+    fprintf(pPOTFile,"msgid \"%s\"\n", currEntry.msgID.c_str());
+    fprintf(pPOTFile,"msgstr \"%s\"\n\n", currEntry.msgStr.c_str());
+
+    writtenEntry++;
+    previd =id;
+  }
+  fclose(pPOTFile);
+
+  printf("%i\t\t", writtenEntry);
+  printf("%i\t\t", 0);
+  printf("%s\n", OutputPOFilename.erase(0,strDir.length()).c_str());
+
+  return true;
+}
+
+
+void ClearCPOEntry (CPOEntry &entry)
+{
+  entry.msgStrPlural.clear();
+  entry.referenceComm.clear();
+  entry.extractedComm.clear();
+  entry.translatorComm.clear();
+  entry.interlineComm.clear();
+  entry.numID = 0;
+  entry.msgID.clear();
+  entry.msgStr.clear();
+  entry.msgIDPlur.clear();
+  entry.msgCtxt.clear();
+  entry.Type = UNKNOWN_FOUND;
+};
 
 bool CheckPOFile(std::string strDir, std::string strLang)
 {
   CPODocument PODoc;
   if (!PODoc.LoadFile(strDir + DirSepChar + strLang + DirSepChar + "strings.po"))
     return false;
+  if (PODoc.GetEntryType() != HEADER_FOUND)
+    printf ("POParser: No valid header found for this language");
+
+  strHeader = PODoc.GetEntryData().Content.substr(1);
 
   int counter = 0;
+  mapStrings.clear();
+  vecClassicEntries.clear();
+
+  bool bMultipleComment = false;
+  std::vector<std::string> vecILCommnts;
+  CPOEntry currEntry;
+  int currType = UNKNOWN_FOUND;
 
   while ((PODoc.GetNextEntry()))
   {
-    printf("Type:%i\n", PODoc.GetEntryType());
     PODoc.ParseEntry();
-    CPOEntry POEntry = PODoc.GetEntryData();
-    printf("id:%i\n", POEntry.numID);
-    printf("msgid:%s\n", POEntry.msgID.c_str());
-    printf("msgstr:%s\n", POEntry.msgStr.c_str());
-    printf("msgctxt:%s\n", POEntry.msgCtxt.c_str());
-    if (!POEntry.translComments.empty())
-      printf("commenttran:%s\n", POEntry.translComments[0].c_str());
-    if (!POEntry.occurComments.empty())
-      printf("commentocc:%s\n", POEntry.occurComments[0].c_str());
-    if (!POEntry.otherComments.empty())
-    {
-     for (size_t i=0;i<POEntry.otherComments.size();i++) printf("commentother:%s\n", POEntry.otherComments[i].c_str());
-    }
-    printf("\n\n\n");
-  }
+    currEntry = PODoc.GetEntryData();
+    currType = PODoc.GetEntryType();
 
+    if (currType == COMMENT_ENTRY_FOUND)
+    {
+      if (!vecILCommnts.empty())
+        bMultipleComment = true;
+      vecILCommnts = currEntry.interlineComm;
+      continue;
+    }
+
+    if (currType == ID_FOUND || currType == MSGID_FOUND || currType == MSGID_PLURAL_FOUND)
+    {
+      if (bMultipleComment)
+        printf("POParser: multiple comment entries found. Using only the last one "
+               "before the real entry. Entry after comments: %s", currEntry.Content.c_str());
+      if (!currEntry.interlineComm.empty())
+        printf("POParser: interline comments (eg. #comment) is not alowed inside "
+               "a real po entry. Cleaned it. Problematic entry: %s", currEntry.Content.c_str());
+      currEntry.interlineComm = vecILCommnts;
+      bMultipleComment = false;
+      vecILCommnts.clear();
+      if (currType == ID_FOUND)
+        mapStrings[currEntry.numID] = currEntry;
+      else
+        vecClassicEntries.push_back(currEntry);
+/*
+      printf("id:%i\n", currEntry.numID);
+      printf("msgid:%s\n", currEntry.msgID.c_str());
+      printf("msgstr:%s\n", currEntry.msgStr.c_str());
+      printf("msgctxt:%s\n", currEntry.msgCtxt.c_str());
+      if (!currEntry.interlineComm.empty())
+      {
+        for (size_t i=0;i < currEntry.interlineComm.size();i++) printf("commentother:%s\n", currEntry.interlineComm[i].c_str());
+      }
+      if (!currEntry.translatorComm.empty())
+      {
+        for (size_t i=0;i < currEntry.translatorComm.size();i++) printf("commenttransl:%s\n", currEntry.translatorComm[i].c_str());
+      }
+      if (!currEntry.extractedComm.empty())
+      {
+        for (size_t i=0;i < currEntry.extractedComm.size();i++) printf("commentextr:%s\n", currEntry.extractedComm[i].c_str());
+      }
+      if (!currEntry.translatorComm.empty())
+      {
+        for (size_t i=0;i < currEntry.referenceComm.size();i++) printf("commentrefer:%s\n", currEntry.referenceComm[i].c_str());
+      }
+      printf("\n\n\n");
+
+*/
+      ClearCPOEntry(currEntry);
+    }
+  }
+  WritePOFile(strDir, strLang);
   return true;
 };
 
@@ -158,19 +307,6 @@ int main(int argc, char* argv[])
   if (WorkingDir[WorkingDir.length()-1] != DirSepChar)
     WorkingDir.append(&DirSepChar);
 
-//  if (bCheckSourceLang)
-//  {
-    if (!CheckPOFile(WorkingDir, "English"))
-    {
-      printf("Fatal error: no English source xml file found or it is corrupted\n");
-      return 1;
-    }
-    else
-      return 0;
-//  }
-/*
-  ConvertXML2PO(WorkingDir + "English" + DirSepChar, "en", 2, "(n != 1)", false);
-
   DIR* Dir;
   struct dirent *DirEntry;
   Dir = opendir(WorkingDir.c_str());
@@ -179,13 +315,16 @@ int main(int argc, char* argv[])
   while((DirEntry=readdir(Dir)))
   {
     std::string LName = "";
-    if (DirEntry->d_type == DT_DIR && DirEntry->d_name[0] != '.' && strcmp(DirEntry->d_name, "English"))
+    if (DirEntry->d_type == DT_DIR && DirEntry->d_name[0] != '.')
     {
-      if (loadXMLFile(xmlDocForeignInput, WorkingDir + DirEntry->d_name + DirSepChar + "strings.xml",
-          &mapForeignXmlId, false))
+      if (CheckPOFile(WorkingDir, DirEntry->d_name))
       {
-        ConvertXML2PO(WorkingDir + DirEntry->d_name + DirSepChar, FindLangCode(DirEntry->d_name),
-                      GetnPlurals(DirEntry->d_name), GetPlurForm(DirEntry->d_name), true);
+        std::string pofilename = WorkingDir + DirSepChar + DirEntry->d_name + DirSepChar + "strings.po";
+        std::string bakpofilename = WorkingDir + DirSepChar + DirEntry->d_name + DirSepChar + "strings.po.bak";
+        std::string temppofilename = WorkingDir + DirSepChar + DirEntry->d_name + DirSepChar + "strings.po.temp";
+
+        rename(pofilename.c_str(), bakpofilename.c_str());
+        rename(temppofilename.c_str(),pofilename.c_str());
         langcounter++;
       }
     }
@@ -193,9 +332,9 @@ int main(int argc, char* argv[])
 
   printf("\nReady. Processed %i languages.\n", langcounter+1);
 
-  if (bUnknownLangFound)
-    printf("\nWarning: At least one language found with unpaired language code !\n"
-      "Please edit the .po file manually and correct the language code, plurals !\n"
-      "Also please report this to alanwww1@xbmc.org if possible !\n\n");
-  return 0; */
+//  if (bUnknownLangFound)
+//    printf("\nWarning: At least one language found with unpaired language code !\n"
+//      "Please edit the .po file manually and correct the language code, plurals !\n"
+//      "Also please report this to alanwww1@xbmc.org if possible !\n\n");
+  return 0;
 }

@@ -28,7 +28,7 @@ enum
   ID_FOUND = 0, // We have an entry with a numeric (previously XML) identification number.
   MSGID_FOUND = 1, // We have a classic gettext entry with textual msgid. No numeric ID.
   MSGID_PLURAL_FOUND = 2, // We have a classic gettext entry with textual msgid in plural form.
-  COMMENT_FOUND = 3, // We have a separate comment entry
+  COMMENT_ENTRY_FOUND = 3, // We have a separate comment entry
   HEADER_FOUND = 4, // We have a header entry
   UNKNOWN_FOUND = 5 // Unknown entrytype found
 };
@@ -49,9 +49,10 @@ struct CPOEntry
   std::string msgIDPlur;
   std::string msgStr;
   std::vector<std::string> msgStrPlural;
-  std::vector<std::string> translComments; // #. comment
-  std::vector<std::string> occurComments;  // #: occurence
-  std::vector<std::string> otherComments;  // #other comment
+  std::vector<std::string> extractedComm;   // #. extracted comment
+  std::vector<std::string> referenceComm;   // #: reference
+  std::vector<std::string> translatorComm;  // # translator comment
+  std::vector<std::string> interlineComm;   // #comment between lines
   std::string Content;
 };
 

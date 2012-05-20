@@ -30,9 +30,10 @@ CPODocument::CPODocument()
   m_nextEntryPos = 0;
   m_POfilelength = 0;
   m_Entry.msgStrPlural.clear();
-  m_Entry.occurComments.clear();
-  m_Entry.otherComments.clear();
-  m_Entry.translComments.clear();
+  m_Entry.translatorComm.clear();
+  m_Entry.referenceComm.clear();
+  m_Entry.interlineComm.clear();
+  m_Entry.extractedComm.clear();
   m_Entry.numID = 0;
 }
 
@@ -109,8 +110,12 @@ bool CPODocument::GetNextEntry()
     {
       if (FindLineStart ("\n#: id:"))
       {
-        m_Entry.Type = ID_FOUND; // we found an entry with a valid numeric id
-        return true;
+        size_t ipos = m_Entry.Content.find("\n#: id:");
+        if (isdigit(m_Entry.Content[ipos+7]))
+        {
+          m_Entry.Type = ID_FOUND; // we found an entry with a valid numeric id
+          return true;
+        }
       }
 
       if (FindLineStart ("\nmsgid_plural "))
@@ -124,10 +129,17 @@ bool CPODocument::GetNextEntry()
     }
     if (FindLineStart ("\n#"))
     {
-      m_Entry.Type = COMMENT_FOUND; // we found a pluralized entry
+      size_t ipos = m_Entry.Content.find("\n#");
+      if (m_Entry.Content[ipos+2] != ' ' && m_Entry.Content[ipos+2] != '.' &&
+          m_Entry.Content[ipos+2] != ':' && m_Entry.Content[ipos+2] != ',' &&
+          m_Entry.Content[ipos+2] != '|')
+      {
+        m_Entry.Type = COMMENT_ENTRY_FOUND; // we found a pluralized entry
       return true;
+      }
     }
-    printf("POParser: unknown entry found, Failed entry: %s", m_Entry.Content.c_str());
+    if (m_nextEntryPos != m_POfilelength-1)
+      printf("POParser: unknown entry found, Failed entry: %s", m_Entry.Content.c_str());
   }
   while (m_nextEntryPos != m_POfilelength-1);
   // we reached the end of buffer AND we have not found a valid entry
@@ -138,15 +150,15 @@ bool CPODocument::GetNextEntry()
 void CPODocument::ParseEntry()
 {
   m_Entry.msgStrPlural.clear();
-  m_Entry.occurComments.clear();
-  m_Entry.otherComments.clear();
-  m_Entry.translComments.clear();
+  m_Entry.translatorComm.clear();
+  m_Entry.referenceComm.clear();
+  m_Entry.interlineComm.clear();
+  m_Entry.extractedComm.clear();
   m_Entry.numID = 0;
   m_Entry.msgID.clear();
   m_Entry.msgStr.clear();
   m_Entry.msgIDPlur.clear();
   m_Entry.msgCtxt.clear();
-  m_Entry.Type = UNKNOWN_FOUND;
 
   size_t LineCursor = 1;
   size_t NextLineStart = 0;
@@ -228,22 +240,27 @@ void CPODocument::ParseEntry()
       else if (HasPrefix(strLine, "#:") && strLine.size() > 2)
       {
         std::string strCommnt = strLine.substr(2);
-        m_Entry.occurComments.push_back(strCommnt);
+        m_Entry.referenceComm.push_back(strCommnt);
       }
 
       else if (HasPrefix(strLine, "#.") && strLine.size() > 2)
       {
         std::string strCommnt = strLine.substr(2);
-        m_Entry.translComments.push_back(strCommnt);
+        m_Entry.extractedComm.push_back(strCommnt);
       }
 
       else if (HasPrefix(strLine, "#") && strLine.size() > 1 && strLine[1] != '.' &&
-        strLine[1] != ':')
+        strLine[1] != ':' && strLine[1] != ' ')
       {
         std::string strCommnt = strLine.substr(1);
-        m_Entry.otherComments.push_back(strCommnt);
+        if (strCommnt.substr(0,5) != "empty")
+          m_Entry.interlineComm.push_back(strCommnt);
       }
-
+      else if (HasPrefix(strLine, "# "))
+      {
+        std::string strCommnt = strLine.substr(2);
+        m_Entry.translatorComm.push_back(strCommnt);
+      }
       else
         printf("POParser: unknown line type found. Failed entry: %s", m_Entry.Content.c_str());
   }
