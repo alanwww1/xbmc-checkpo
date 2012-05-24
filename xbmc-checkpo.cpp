@@ -48,6 +48,8 @@
 #include <algorithm>
 #include "POUtils.h"
 
+const std::string VERSION = "0.7";
+
 #ifdef _MSC_VER
 char DirSepChar = '\\';
   #include "dirent.h"
@@ -61,6 +63,7 @@ bool bCheckSourceLang;
 
 std::string strHeader;
 FILE * pPOTFile;
+FILE * pLogFile;
 
 std::map<uint32_t, CPOEntry> mapStrings;
 typedef std::map<uint32_t, CPOEntry>::iterator itStrings;
@@ -126,8 +129,6 @@ bool WritePOFile(std::string strDir, std::string strLang)
     int id = it->first;
     CPOEntry currEntry = it->second;
 
-    //create comment lines, if empty string id or ids found and
-    //re-create original xml comments between entries. Only for the source language
     bCommentWritten = false;
     if (!bIsForeignLang)
     {
@@ -143,11 +144,6 @@ bool WritePOFile(std::string strDir, std::string strLang)
       if (bCommentWritten) fprintf(pPOTFile, "\n");
     }
 
-    //create comment, including string id
-    fprintf(pPOTFile,"#: id:%i\n", id);
-
-    //write comment originally placed next to the string entry
-    //convert it into #. style gettext comment
     if (!bIsForeignLang)
     {
       WriteMultilineComment(currEntry.translatorComm, "# ");
@@ -155,8 +151,8 @@ bool WritePOFile(std::string strDir, std::string strLang)
       WriteMultilineComment(currEntry.referenceComm, "#:");
     }
 
-    if (!currEntry.msgCtxt.empty())
-      fprintf(pPOTFile,"msgctxt \"%s\"\n", currEntry.msgCtxt.c_str());
+    fprintf(pPOTFile,"msgctxt \"#%i\"\n", id);
+
     fprintf(pPOTFile,"msgid \"%s\"\n", currEntry.msgID.c_str());
     fprintf(pPOTFile,"msgstr \"%s\"\n\n", currEntry.msgStr.c_str());
 
@@ -236,34 +232,13 @@ bool CheckPOFile(std::string strDir, std::string strLang)
         mapStrings[currEntry.numID] = currEntry;
       else
         vecClassicEntries.push_back(currEntry);
-/*
-      printf("id:%i\n", currEntry.numID);
-      printf("msgid:%s\n", currEntry.msgID.c_str());
-      printf("msgstr:%s\n", currEntry.msgStr.c_str());
-      printf("msgctxt:%s\n", currEntry.msgCtxt.c_str());
-      if (!currEntry.interlineComm.empty())
-      {
-        for (size_t i=0;i < currEntry.interlineComm.size();i++) printf("commentother:%s\n", currEntry.interlineComm[i].c_str());
-      }
-      if (!currEntry.translatorComm.empty())
-      {
-        for (size_t i=0;i < currEntry.translatorComm.size();i++) printf("commenttransl:%s\n", currEntry.translatorComm[i].c_str());
-      }
-      if (!currEntry.extractedComm.empty())
-      {
-        for (size_t i=0;i < currEntry.extractedComm.size();i++) printf("commentextr:%s\n", currEntry.extractedComm[i].c_str());
-      }
-      if (!currEntry.translatorComm.empty())
-      {
-        for (size_t i=0;i < currEntry.referenceComm.size();i++) printf("commentrefer:%s\n", currEntry.referenceComm[i].c_str());
-      }
-      printf("\n\n\n");
 
-*/
       ClearCPOEntry(currEntry);
     }
   }
+
   WritePOFile(strDir, strLang);
+
   return true;
 };
 
@@ -298,7 +273,7 @@ int main(int argc, char* argv[])
     return 1;
   }
 
-  printf("\nXBMC-CHECKPO v0.7 by Team XBMC\n");
+  printf("\nXBMC-CHECKPO v%s by Team XBMC\n", VERSION);
   printf("\nResults:\n\n");
   printf("Langcode\tString match\tAuto contexts\tOutput file\n");
   printf("--------------------------------------------------------------\n");
@@ -306,6 +281,15 @@ int main(int argc, char* argv[])
   std::string WorkingDir(pSourceDirectory);
   if (WorkingDir[WorkingDir.length()-1] != DirSepChar)
     WorkingDir.append(&DirSepChar);
+
+  pLogFile = fopen (WorkingDir.append("xbmc-checkpo.log").c_str(),"wb");
+  if (pLogFile == NULL)
+  {
+    fclose(pLogFile);
+    printf("Error opening logfile: %s\n", WorkingDir.append("xbmc-checkpo.log");
+    return false;
+  }
+  fprintf(pLogFile, "XBMC.CHECKPO v%s started", VERSION);
 
   DIR* Dir;
   struct dirent *DirEntry;

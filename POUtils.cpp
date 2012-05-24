@@ -71,6 +71,8 @@ bool CPODocument::LoadFile(const std::string &pofilename)
     return false;
   }
 
+  m_POfilelength++;
+
   ConvertLineEnds(pofilename);
 
   // we make sure, to have an LF at beginning and at end of buffer
@@ -108,10 +110,10 @@ bool CPODocument::GetNextEntry()
 
     if (FindLineStart ("\nmsgid "))
     {
-      if (FindLineStart ("\n#: id:"))
+      if (FindLineStart ("\nmsgctxt \"#"))
       {
-        size_t ipos = m_Entry.Content.find("\n#: id:");
-        if (isdigit(m_Entry.Content[ipos+7]))
+        size_t ipos = m_Entry.Content.find("\nmsgctxt \"#");
+        if (isdigit(m_Entry.Content[ipos+11]))
         {
           m_Entry.Type = ID_FOUND; // we found an entry with a valid numeric id
           return true;
@@ -183,7 +185,7 @@ void CPODocument::ParseEntry()
     if (pPlaceToParse && ReadStringLine(strLine, pPlaceToParse,0)) continue; // we are reading a continous multilne string
       else pPlaceToParse= NULL; // end of reading the multiline string
 
-      if (HasPrefix(strLine, "msgctxt") && strLine.size() > 9)
+      if (HasPrefix(strLine, "msgctxt") && !HasPrefix(strLine, "msgctxt \"#") && strLine.size() > 9)
       {
         pPlaceToParse = &m_Entry.msgCtxt;
         if (!ReadStringLine(strLine, pPlaceToParse,8))
@@ -234,8 +236,8 @@ void CPODocument::ParseEntry()
         }
       }
 
-      else if (HasPrefix(strLine, "#: id:") && strLine.size() > 6 && isdigit(strLine[6]))
-        ParseNumID(strLine, 6);
+      else if (HasPrefix(strLine, "msgctxt \"#") && strLine.size() > 10 && isdigit(strLine[10]))
+        ParseNumID(strLine, 10);
 
       else if (HasPrefix(strLine, "#:") && strLine.size() > 2)
       {
