@@ -37,16 +37,20 @@
 #else
     #include <unistd.h>
     #define GetCurrentDir getcwd
- #endif
+#endif
 
 
 #include <stdio.h>
 #include "tinyxml.h"
 #include <string>
 #include <map>
+#include <list>
 #include "ctime"
 #include <algorithm>
 #include "POUtils.h"
+#include <sys/stat.h>
+#include "xbmclangcodes.h"
+#include "CharsetUtils.h"
 
 const std::string VERSION = "0.7";
 
@@ -71,6 +75,33 @@ typedef std::map<uint32_t, CPOEntry>::iterator itStrings;
 std::vector<CPOEntry> vecClassicEntries;
 typedef std::vector<CPOEntry>::iterator itClassicEntries;
 
+struct CAddonXMLEntry
+{
+  std::string strSummary;
+  std::string strDescription;
+  std::string strDisclaimer;
+};
+
+enum
+{
+  SKIN = 0,
+  ADDON = 1,
+  CORE = 2,
+  ADDON_NOSTRINGS = 3,
+  UNKNOWN = 4
+};
+
+std::string addonXMLEncoding;
+std::map<std::string, CAddonXMLEntry> mapAddonXMLData;
+std::map<std::string, CAddonXMLEntry>::iterator itAddonXMLData;
+bool bhasLFWritten;
+std::string WorkingDir;
+std::string ProjRootDir;
+std::string ProjName;
+std::string ProjVersion;
+std::string ProjTextName;
+std::string ProjProvider;
+int projType;
 
 void PrintUsage()
 {
@@ -92,22 +123,264 @@ void PrintUsage()
 return;
 };
 
-bool WriteMultilineComment(std::vector<std::string> vecCommnts, std::string prefix)
+bool MakeDir(std::string Path)
+{
+  #ifdef _MSC_VER
+  return CreateDirectory (Path.c_str(), NULL) != 0;
+  #else
+  return mkdir(Path.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) ==0;
+  #endif
+};
+
+bool DirExists(std::string Path)
+{
+  #ifdef _MSC_VER
+  return !(INVALID_FILE_ATTRIBUTES == GetFileAttributes(Path.c_str()) && GetLastError()==ERROR_FILE_NOT_FOUND);
+  #else
+  struct stat st;
+  return (stat(Path.c_str(), &st) == 0);
+  #endif
+};
+
+bool FileExist(std::string filename) 
+{
+  FILE* pfileToTest = fopen (filename.c_str(),"rb");
+  if (pfileToTest == NULL)
+    return false;
+  fclose(pfileToTest);
+  return true;
+}
+
+std::string AddSlash(std::string strIn)
+{
+  if (strIn[strIn.size()-1] == DirSepChar)
+    return strIn;
+  return strIn + DirSepChar;
+}
+
+bool LoadCoreVersion(std::string filename)
+{
+  std::string strBuffer;
+  FILE * file;
+
+  file = fopen(filename.c_str(), "rb");
+  if (!file)
+    return false;
+
+  fseek(file, 0, SEEK_END);
+  int64_t fileLength = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  if (fileLength < 10)
+  {
+    fclose(file);
+    printf("non valid length found for GUIInfoManager file");
+    return false;
+  }
+
+  strBuffer.resize(fileLength+1);
+
+  unsigned int readBytes =  fread(&strBuffer[1], 1, fileLength, file);
+  fclose(file);
+
+  if (readBytes != fileLength)
+  {
+    printf("actual read data differs from file size, for GUIInfoManager file");
+    return false;
+  }
+  size_t startpos = strBuffer.find("#define VERSION_MAJOR ") + 22;
+  size_t endpos = strBuffer.find_first_of(" \n\r", startpos);
+  ProjVersion = strBuffer.substr(startpos, endpos-startpos);
+  ProjVersion += ".";
+
+  startpos = strBuffer.find("#define VERSION_MINOR ") + 22;
+  endpos = strBuffer.find_first_of(" \n\r", startpos);
+  ProjVersion += strBuffer.substr(startpos, endpos-startpos);
+
+  startpos = strBuffer.find("#define VERSION_TAG \"") + 21;
+  endpos = strBuffer.find_first_of(" \n\r\"", startpos);
+  ProjVersion += strBuffer.substr(startpos, endpos-startpos);
+  return true;
+}
+
+void WriteLF(FILE* pfile)
+{
+  if (!bhasLFWritten)
+  {
+    bhasLFWritten = true;
+    fprintf (pfile, "\n");
+  }
+};
+
+// we write str lines into the file
+void WriteStrLine(std::string prefix, std::string linkedString, std::string encoding, FILE* pFile)
+{
+  WriteLF(pFile);
+  linkedString = ToUTF8(encoding, linkedString);
+  fprintf (pFile, "%s", prefix.c_str());
+  fprintf (pFile, "\"%s\"\n", linkedString.c_str());
+  return;
+}
+
+std::string EscapeLF(const char * StrToEscape)
+{
+  std::string strIN(StrToEscape);
+  std::string strOut;
+  std::string::iterator it;
+  for (it = strIN.begin(); it != strIN.end(); it++)
+  {
+    if (*it == '\n')
+    {
+      strOut.append("\\n");
+      continue;
+    }
+    if (*it == '\r')
+      continue;
+    strOut += *it;
+  }
+  return strOut;
+}
+
+bool GetEncoding(const TiXmlDocument* pDoc, std::string& strEncoding)
+{
+  const TiXmlNode* pNode=NULL;
+  while ((pNode=pDoc->IterateChildren(pNode)) && pNode->Type()!=TiXmlNode::TINYXML_DECLARATION) {}
+  if (!pNode) return false;
+  const TiXmlDeclaration* pDecl=pNode->ToDeclaration();
+  if (!pDecl) return false;
+  strEncoding=pDecl->Encoding();
+  if (strEncoding.compare("UTF-8") ==0 || strEncoding.compare("UTF8") == 0 ||
+    strEncoding.compare("utf-8") ==0 || strEncoding.compare("utf8") == 0)
+    strEncoding.clear();
+  std::transform(strEncoding.begin(), strEncoding.end(), strEncoding.begin(), ::toupper);
+  return !strEncoding.empty(); // Other encoding then UTF8?
+}
+
+bool loadAddonXMLFile (std::string AddonXMLFilename)
+{
+  TiXmlDocument xmlAddonXML;
+
+  if (!xmlAddonXML.LoadFile(AddonXMLFilename.c_str()))
+  {
+    printf ("%s %s\n", xmlAddonXML.ErrorDesc(), (AddonXMLFilename + "addon.xml").c_str());
+    return false;
+  }
+
+  GetEncoding(&xmlAddonXML, addonXMLEncoding);
+
+  TiXmlElement* pRootElement = xmlAddonXML.RootElement();
+
+  if (!pRootElement || pRootElement->NoChildren() || pRootElement->ValueTStr()!="addon")
+  {
+    printf ("error: No root element called: \"addon\" or no child found in AddonXML file: %s\n",
+            AddonXMLFilename.c_str());
+    return false;
+  }
+  const char* pMainAttrId = NULL;
+
+  pMainAttrId=pRootElement->Attribute("id");
+  if (!pMainAttrId)
+  {
+    printf ("warning: No addon name was available in addon.xml file: %s\n", AddonXMLFilename.c_str());
+    ProjName = "xbmc-unnamed";
+  }
+  else
+    ProjName = EscapeLF(pMainAttrId);
+
+  pMainAttrId=pRootElement->Attribute("version");
+  if (!pMainAttrId)
+  {
+    printf ("warning: No version name was available in addon.xml file: %s\n", AddonXMLFilename.c_str());
+    ProjVersion = "rev_unknown";
+  }
+  else
+    ProjVersion = EscapeLF(pMainAttrId);
+
+  pMainAttrId=pRootElement->Attribute("name");
+  if (!pMainAttrId)
+  {
+    printf ("warning: No addon name was available in addon.xml file: %s\n", AddonXMLFilename.c_str());
+    ProjTextName = "unknown";
+  }
+  else
+    ProjTextName = EscapeLF(pMainAttrId);
+
+  pMainAttrId=pRootElement->Attribute("provider-name");
+  if (!pMainAttrId)
+  {
+    printf ("warning: No addon provider was available in addon.xml file: %s\n", AddonXMLFilename.c_str());
+    ProjProvider = "unknown";
+  }
+  else
+    ProjProvider = EscapeLF(pMainAttrId);
+
+  std::string strAttrToSearch = "xbmc.addon.metadata";
+
+  const TiXmlElement *pChildElement = pRootElement->FirstChildElement("extension");
+  while (pChildElement && strcmp(pChildElement->Attribute("point"), "xbmc.addon.metadata") != 0)
+    pChildElement = pChildElement->NextSiblingElement("extension");
+
+  const TiXmlElement *pChildSummElement = pChildElement->FirstChildElement("summary");
+  while (pChildSummElement && pChildSummElement->FirstChild())
+  {
+    std::string strLang = pChildSummElement->Attribute("lang");
+    if (pChildSummElement->FirstChild())
+    {
+      std::string strValue = EscapeLF(pChildSummElement->FirstChild()->Value());
+      mapAddonXMLData[strLang].strSummary = strValue;
+    }
+    pChildSummElement = pChildSummElement->NextSiblingElement("summary");
+  }
+
+  const TiXmlElement *pChildDescElement = pChildElement->FirstChildElement("description");
+  while (pChildDescElement && pChildDescElement->FirstChild())
+  {
+    std::string strLang = pChildDescElement->Attribute("lang");
+    if (pChildDescElement->FirstChild())
+    {
+      std::string strValue = EscapeLF(pChildDescElement->FirstChild()->Value());
+      mapAddonXMLData[strLang].strDescription = strValue;
+    }
+    pChildDescElement = pChildDescElement->NextSiblingElement("description");
+  }
+
+  const TiXmlElement *pChildDisclElement = pChildElement->FirstChildElement("disclaimer");
+  while (pChildDisclElement && pChildDisclElement->FirstChild())
+  {
+    std::string strLang = pChildDisclElement->Attribute("lang");
+    if (pChildDisclElement->FirstChild())
+    {
+      std::string strValue = EscapeLF(pChildDisclElement->FirstChild()->Value());
+      mapAddonXMLData[strLang].strDisclaimer = strValue;
+    }
+    pChildDisclElement = pChildDisclElement->NextSiblingElement("disclaimer");
+  }
+
+  return true;
+}
+
+void WriteMultilineComment(std::vector<std::string> vecCommnts, std::string prefix)
 {
   if (!vecCommnts.empty())
   {
     for (size_t i=0; i < vecCommnts.size(); i++)
+    {
+      WriteLF(pPOTFile);
       fprintf(pPOTFile, "%s%s\n", prefix.c_str(), vecCommnts[i].c_str());
+    }
   }
-  return !vecCommnts.empty();
+  return;
 }
 
 bool WritePOFile(std::string strDir, std::string strLang)
 {
   int writtenEntry = 0;
   std::string OutputPOFilename;
-  std::string LCode = strHeader.substr(strHeader.find("Language: ")+10,2);
+  size_t startpos = strHeader.find("Language: ")+10;
+  size_t endpos = strHeader.find_first_of("\\ \n", startpos);
+  std::string LCode = strHeader.substr(startpos, endpos-startpos);
   bool bIsForeignLang = strLang != "English";
+  bhasLFWritten = false;
 
   OutputPOFilename = strDir + DirSepChar + strLang + DirSepChar + "strings.po.temp";
 
@@ -118,31 +391,74 @@ bool WritePOFile(std::string strDir, std::string strLang)
     printf("Error opening output file: %s\n", OutputPOFilename.c_str());
     return false;
   }
-  printf("%s\t\t", LCode.c_str()); 
+  printf("%s\t\t", LCode.c_str());
 
-  fprintf(pPOTFile, "%s\n", strHeader.c_str());
+  size_t startPos;
+  startPos = strHeader.find("msgid \"\"");
+  if ((startPos = strHeader.find("# Translators")) != std::string::npos)
+    strHeader = strHeader.substr(startPos);
+  else if ((startPos = strHeader.find("msgid \"\"")) != std::string::npos)
+    strHeader = strHeader.substr(startPos);
+
+  fprintf(pPOTFile, "# XBMC Media Center language file\n");
+  if (projType != CORE && projType != UNKNOWN)
+  {
+    fprintf(pPOTFile, "# Addon Name: %s\n", ProjTextName.c_str());
+    fprintf(pPOTFile, "# Addon id: %s\n", ProjName.c_str());
+    fprintf(pPOTFile, "# Addon version: %s\n", ProjVersion.c_str());
+    fprintf(pPOTFile, "# Addon Provider: %s\n", ProjProvider.c_str());
+  }
+
+  fprintf(pPOTFile, "%s", strHeader.c_str());
+
+  if (!mapAddonXMLData["en"].strSummary.empty())
+  {
+    WriteStrLine("msgctxt ", "Addon Summary", addonXMLEncoding, pPOTFile);
+    WriteStrLine("msgid ", mapAddonXMLData["en"].strSummary.c_str(), addonXMLEncoding, pPOTFile);
+    WriteStrLine("msgstr ", LCode == "en" ? "": mapAddonXMLData[LCode].strSummary.c_str(), addonXMLEncoding, pPOTFile);
+    bhasLFWritten =false;
+    writtenEntry++;
+  }
+
+  if (!mapAddonXMLData["en"].strDescription.empty())
+  {
+    WriteStrLine("msgctxt ", "Addon Description", addonXMLEncoding, pPOTFile);
+    WriteStrLine("msgid ", mapAddonXMLData["en"].strDescription.c_str(), addonXMLEncoding, pPOTFile);
+    WriteStrLine("msgstr ", LCode == "en" ? "": mapAddonXMLData[LCode].strDescription.c_str(), addonXMLEncoding, pPOTFile);
+    bhasLFWritten =false;
+    writtenEntry++;
+  }
+
+  if (!mapAddonXMLData["en"].strDisclaimer.empty())
+  {
+    WriteStrLine("msgctxt ", "Addon Disclaimer", addonXMLEncoding, pPOTFile);
+    WriteStrLine("msgid ", mapAddonXMLData["en"].strDisclaimer.c_str(), addonXMLEncoding, pPOTFile);
+    WriteStrLine("msgstr ", LCode == "en" ? "": mapAddonXMLData[LCode].strDisclaimer.c_str(), addonXMLEncoding, pPOTFile);
+    bhasLFWritten =false;
+    writtenEntry++;
+  }
 
   int previd = -1;
-  bool bCommentWritten = false;
+
   for ( itStrings it = mapStrings.begin() ; it != mapStrings.end() ; it++)
   {
+    bhasLFWritten =false;
     int id = it->first;
     CPOEntry currEntry = it->second;
 
-    bCommentWritten = false;
     if (!bIsForeignLang)
     {
-      bCommentWritten = WriteMultilineComment(currEntry.interlineComm, "#");
-      if (id-previd >= 2)
+      WriteMultilineComment(currEntry.interlineComm, "#");
+      if (id-previd >= 2 && previd > -1)
       {
-        if (id-previd == 2 && previd > -1)
+        WriteLF(pPOTFile);
+        if (id-previd == 2)
           fprintf(pPOTFile,"#empty string with id %i\n", id-1);
-        if (id-previd > 2 && previd > -1)
+        if (id-previd > 2)
           fprintf(pPOTFile,"#empty strings from id %i to %i\n", previd+1, id-1);
-        bCommentWritten = true;
       }
-      if (bCommentWritten) fprintf(pPOTFile, "\n");
     }
+    bhasLFWritten = false;
 
     if (!bIsForeignLang)
     {
@@ -151,10 +467,12 @@ bool WritePOFile(std::string strDir, std::string strLang)
       WriteMultilineComment(currEntry.referenceComm, "#:");
     }
 
+    WriteLF(pPOTFile);
     fprintf(pPOTFile,"msgctxt \"#%i\"\n", id);
 
+    WriteLF(pPOTFile);
     fprintf(pPOTFile,"msgid \"%s\"\n", currEntry.msgID.c_str());
-    fprintf(pPOTFile,"msgstr \"%s\"\n\n", currEntry.msgStr.c_str());
+    fprintf(pPOTFile,"msgstr \"%s\"\n", currEntry.msgStr.c_str());
 
     writtenEntry++;
     previd =id;
@@ -194,7 +512,6 @@ bool CheckPOFile(std::string strDir, std::string strLang)
 
   strHeader = PODoc.GetEntryData().Content.substr(1);
 
-  int counter = 0;
   mapStrings.clear();
   vecClassicEntries.clear();
 
@@ -267,50 +584,131 @@ int main(int argc, char* argv[])
   if (pSourceDirectory == NULL)
   {
     printf("\nWrong Arguments given !\n");
-    char *path=NULL;
-    size_t size;
-    path=getcwd(path,size);
     return 1;
   }
 
-  printf("\nXBMC-CHECKPO v%s by Team XBMC\n", VERSION);
+  printf("\nXBMC-CHECKPO v%s by Team XBMC\n", VERSION.c_str());
   printf("\nResults:\n\n");
   printf("Langcode\tString match\tAuto contexts\tOutput file\n");
   printf("--------------------------------------------------------------\n");
 
-  std::string WorkingDir(pSourceDirectory);
+  WorkingDir = pSourceDirectory;
   if (WorkingDir[WorkingDir.length()-1] != DirSepChar)
     WorkingDir.append(&DirSepChar);
 
-  pLogFile = fopen (WorkingDir.append("xbmc-checkpo.log").c_str(),"wb");
+  pLogFile = fopen ((WorkingDir + "xbmc-checkpo.log").c_str(),"wb");
   if (pLogFile == NULL)
   {
     fclose(pLogFile);
-    printf("Error opening logfile: %s\n", WorkingDir.append("xbmc-checkpo.log");
+    printf("Error opening logfile: %s\n", (WorkingDir + "xbmc-checkpo.log").c_str());
     return false;
   }
-  fprintf(pLogFile, "XBMC.CHECKPO v%s started", VERSION);
+  fprintf(pLogFile, "XBMC.CHECKPO v%s started", VERSION.c_str());
+
+  ProjRootDir = pSourceDirectory;
+  ProjRootDir = AddSlash(ProjRootDir);
+  std::string strprojType;
+
+  if ((FileExist(ProjRootDir + "addon.xml")) && (FileExist(ProjRootDir + "resources" + DirSepChar + "language" +
+    DirSepChar + "English" + DirSepChar + "strings.po")))
+  {
+    projType = ADDON;
+    strprojType = "Addon with translatable strings";
+    WorkingDir = ProjRootDir + DirSepChar + "resources" + DirSepChar + "language"+ DirSepChar;
+  }
+  else if ((FileExist(ProjRootDir + "addon.xml")) && (FileExist(ProjRootDir + "language" + DirSepChar + "English" +
+    DirSepChar + "strings.po")))
+  {
+    projType = SKIN;
+    strprojType = "Skin addon";
+    WorkingDir = ProjRootDir + DirSepChar + "language"+ DirSepChar;
+  }
+  else if (FileExist(ProjRootDir + "addon.xml"))
+  {
+    projType = ADDON_NOSTRINGS;
+    strprojType = "Addon without any translatable strings";
+    WorkingDir = ProjRootDir + DirSepChar + "resources" + DirSepChar + "language"+ DirSepChar;
+  }
+  else if (FileExist(ProjRootDir + "xbmc" + DirSepChar + "GUIInfoManager.h"))
+  {
+    projType = CORE;
+    strprojType = "XBMC core";
+    WorkingDir = ProjRootDir + DirSepChar + "language" + DirSepChar;
+  }
+  else
+  {
+    projType = UNKNOWN;
+    strprojType = "Unknown";
+    WorkingDir = ProjRootDir;
+  }
+
+  if (projType == ADDON || projType == ADDON_NOSTRINGS || projType == SKIN)
+    loadAddonXMLFile(ProjRootDir + "addon.xml");
+  else if (projType == CORE)
+  {
+    ProjTextName = "XBMC Core";
+    ProjProvider = "Team XBMC";
+    ProjName = "xbmc.core";
+    LoadCoreVersion(ProjRootDir + "xbmc" + DirSepChar + "GUIInfoManager.h");
+  }
+
+  printf ("Project type detected:\t%s\n", strprojType.c_str());
+  printf ("\nProject name:\t\t%s\n", ProjTextName.c_str());
+  printf ("Project id:\t\t%s\n", ProjName.c_str());
+  printf ("Project version:\t%s\n", ProjVersion.c_str());
+  printf ("Project provider:\t%s\n", ProjProvider.c_str());
+
+  if (projType == ADDON_NOSTRINGS)
+  {
+    if (!DirExists(ProjRootDir + "resources") && (!MakeDir(ProjRootDir + "resources")))
+    {
+      printf ("fatal error: not able to create resources directory at dir: %s", ProjRootDir.c_str());
+      return 1;
+    }
+    if (!DirExists(ProjRootDir + "resources" + DirSepChar + "language") &&
+      (!MakeDir(ProjRootDir + "resources"+ DirSepChar + "language")))
+    {
+      printf ("fatal error: not able to create language directory at dir: %s", (ProjRootDir + "resources").c_str());
+      return 1;
+    }
+    WorkingDir = ProjRootDir + "resources"+ DirSepChar + "language" + DirSepChar;
+    for (itAddonXMLData = mapAddonXMLData.begin(); itAddonXMLData != mapAddonXMLData.end(); itAddonXMLData++)
+    {
+      if (!DirExists(WorkingDir + FindLang(itAddonXMLData->first)) && (!MakeDir(WorkingDir +
+        FindLang(itAddonXMLData->first))))
+      {
+        printf ("fatal error: not able to create %s language directory at dir: %s", itAddonXMLData->first.c_str(),
+                WorkingDir.c_str());
+        return 1;
+      }
+    }
+  }
 
   DIR* Dir;
   struct dirent *DirEntry;
   Dir = opendir(WorkingDir.c_str());
   int langcounter =0;
+  std::list<std::string> listDirs;
+  std::list<std::string>::iterator itlistDirs;
 
   while((DirEntry=readdir(Dir)))
   {
-    std::string LName = "";
     if (DirEntry->d_type == DT_DIR && DirEntry->d_name[0] != '.')
-    {
-      if (CheckPOFile(WorkingDir, DirEntry->d_name))
-      {
-        std::string pofilename = WorkingDir + DirSepChar + DirEntry->d_name + DirSepChar + "strings.po";
-        std::string bakpofilename = WorkingDir + DirSepChar + DirEntry->d_name + DirSepChar + "strings.po.bak";
-        std::string temppofilename = WorkingDir + DirSepChar + DirEntry->d_name + DirSepChar + "strings.po.temp";
+      listDirs.push_back(DirEntry->d_name);
+  }
+  listDirs.sort();
 
-        rename(pofilename.c_str(), bakpofilename.c_str());
-        rename(temppofilename.c_str(),pofilename.c_str());
-        langcounter++;
-      }
+  for (itlistDirs = listDirs.begin(); itlistDirs != listDirs.end(); itlistDirs++)
+  {
+    if (CheckPOFile(WorkingDir, *itlistDirs))
+    {
+      std::string pofilename = WorkingDir + DirSepChar + *itlistDirs + DirSepChar + "strings.po";
+      std::string bakpofilename = WorkingDir + DirSepChar + *itlistDirs + DirSepChar + "strings.po.bak";
+      std::string temppofilename = WorkingDir + DirSepChar + *itlistDirs + DirSepChar + "strings.po.temp";
+
+      rename(pofilename.c_str(), bakpofilename.c_str());
+      rename(temppofilename.c_str(),pofilename.c_str());
+      langcounter++;
     }
   }
 

@@ -90,7 +90,7 @@ all: ${OUTPUT}
 # Source files
 #****************************************************************************
 
-SRCS := tinyxml.cpp tinyxmlparser.cpp xbmc-checkpo.cpp tinyxmlerror.cpp tinystr.cpp POUtils.cpp
+SRCS := tinyxml.cpp tinyxmlparser.cpp xbmc-checkpo.cpp tinyxmlerror.cpp tinystr.cpp POUtils.cpp CharsetUtils.cpp
 
 # Add on the sources for libraries
 SRCS := ${SRCS}
@@ -128,4 +128,5 @@ tinyxml.o: tinyxml.h tinystr.h
 tinyxmlparser.o: tinyxml.h tinystr.h
 str2xml.o: tinyxml.h tinystr.h
 tinyxmlerror.o: tinyxml.h tinystr.h
-POParser.o: POParser.h
+POUtils.o: POUtils.h
+CharsteUtils.o: CharsetUtils.h
